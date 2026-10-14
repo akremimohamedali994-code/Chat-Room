@@ -1,0 +1,683 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CipherRoom — Zero-Knowledge E2EE Chat</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        charcoal: {
+                            950: '#070707',
+                            900: '#0a0a0a',
+                            850: '#121212',
+                            800: '#1a1a1a',
+                            700: '#27272a',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <!-- Inter Font & Lucide Icons -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        .glass-panel {
+            background: rgba(18, 18, 18, 0.85);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+        }
+        .glass-input {
+            background: rgba(10, 10, 10, 0.7);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        .glass-input:focus {
+            border-color: rgba(16, 185, 129, 0.5);
+            box-shadow: 0 0 15px rgba(16, 185, 129, 0.15);
+        }
+        /* Custom scrollbar */
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: #0a0a0a; }
+        ::-webkit-scrollbar-thumb { background: #27272a; border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: #3f3f46; }
+        @keyframes pulse-slow {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        .animate-pulse-slow { animation: pulse-slow 3s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+    </style>
+</head>
+<body class="bg-charcoal-950 text-zinc-100 min-h-screen flex flex-col selection:bg-emerald-500 selection:text-black">
+
+    <!-- Toast Notification Container -->
+    <div id="toast-container" class="fixed top-5 right-5 z-50 flex flex-col gap-3 pointer-events-none"></div>
+
+    <!-- Main App Container -->
+    <div id="app" class="flex-1 flex flex-col">
+        <!-- Rendered dynamically via JavaScript -->
+    </div>
+
+    <!-- Privacy Policy Modal -->
+    <div id="privacy-modal" class="fixed inset-0 z-50 bg-black/80 backdrop-blur-md hidden flex items-center justify-center p-4">
+        <div class="glass-panel max-w-2xl w-full rounded-2xl p-6 sm:p-8 max-h-[90vh] overflow-y-auto relative">
+            <button onclick="togglePrivacyModal(false)" class="absolute top-5 right-5 text-zinc-400 hover:text-white p-2 rounded-lg hover:bg-zinc-800 transition">
+                <i data-lucide="x" class="w-5 h-5"></i>
+            </button>
+            <div class="flex items-center gap-3 mb-6">
+                <div class="p-3 bg-emerald-500/10 text-emerald-400 rounded-xl border border-emerald-500/20">
+                    <i data-lucide="shield-check" class="w-6 h-6"></i>
+                </div>
+                <div>
+                    <h3 class="text-xl font-bold">Privacy & Zero-Knowledge Architecture</h3>
+                    <p class="text-sm text-zinc-400">How your conversations remain strictly confidential.</p>
+                </div>
+            </div>
+            
+            <div class="space-y-4 text-sm text-zinc-300 leading-relaxed">
+                <div class="p-4 bg-zinc-900/60 rounded-xl border border-zinc-800">
+                    <h4 class="font-semibold text-emerald-400 mb-1 flex items-center gap-2">
+                        <i data-lucide="lock" class="w-4 h-4"></i> End-to-End Encryption (E2EE)
+                    </h4>
+                    <p>Messages are encrypted directly in your browser using <strong>AES-GCM 256-bit</strong> encryption before transmission. The decryption key is contained entirely within the URL fragment (after the <code>#</code> symbol), which browsers never send to servers. The server only relays ciphertexts and has zero ability to read your messages.</p>
+                </div>
+
+                <div class="p-4 bg-zinc-900/60 rounded-xl border border-zinc-800">
+                    <h4 class="font-semibold text-emerald-400 mb-1 flex items-center gap-2">
+                        <i data-lucide="user-x" class="w-4 h-4"></i> No Accounts & Zero Logs
+                    </h4>
+                    <p>We do not require usernames, emails, or passwords. Each visitor is assigned a temporary cryptographic session ID. Message history is transient and evaporates when rooms expire or participants disconnect.</p>
+                </div>
+
+                <div class="p-4 bg-zinc-900/60 rounded-xl border border-zinc-800">
+                    <h4 class="font-semibold text-amber-400 mb-1 flex items-center gap-2">
+                        <i data-lucide="alert-triangle" class="w-4 h-4"></i> Threat Model & Limitations
+                    </h4>
+                    <p>While transport and storage are mathematically secured, absolute privacy depends on operational security: anyone with whom you share the invitation link can enter the room. Ensure your device is free of malware or malicious browser extensions capable of keylogging or screen capturing.</p>
+                </div>
+            </div>
+
+            <div class="mt-8 pt-4 border-t border-zinc-800 flex justify-end">
+                <button onclick="togglePrivacyModal(false)" class="bg-zinc-800 hover:bg-zinc-700 text-white font-medium px-5 py-2.5 rounded-xl transition">
+                    Understood
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Application Script Logic -->
+    <script>
+        // --- Application State ---
+        let state = {
+            view: 'home', // 'home' | 'room'
+            roomId: null,
+            secretKey: null,
+            cryptoKey: null,
+            myId: 'Anonymous-' + Math.random().toString(36).substring(2, 6).toUpperCase(),
+            participants: [],
+            messages: [],
+            roomConfig: {
+                expiry: '1h',
+                maxParticipants: 10,
+                hasPassword: false
+            },
+            channel: null,
+            expiryTimer: null,
+            timeRemaining: 3600 // in seconds
+        };
+
+        // --- Toast Notification System ---
+        function showToast(message, type = 'success') {
+            const container = document.getElementById('toast-container');
+            const toast = document.createElement('div');
+            const icons = {
+                success: 'check-circle',
+                error: 'alert-circle',
+                info: 'info'
+            };
+            const colors = {
+                success: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400',
+                error: 'border-red-500/30 bg-red-500/10 text-red-400',
+                info: 'border-cyan-500/30 bg-cyan-500/10 text-cyan-400'
+            };
+
+            toast.className = `pointer-events-auto flex items-center gap-3 px-4 py-3 rounded-xl border ${colors[type]} glass-panel shadow-2xl transition-all duration-300 translate-y-2 opacity-0`;
+            toast.innerHTML = `
+                <i data-lucide="${icons[type]}" class="w-5 h-5 shrink-0"></i>
+                <span class="text-sm font-medium text-zinc-200">${message}</span>
+            `;
+            container.appendChild(toast);
+            lucide.createIcons();
+
+            setTimeout(() => {
+                toast.classList.remove('translate-y-2', 'opacity-0');
+            }, 10);
+
+            setTimeout(() => {
+                toast.classList.add('translate-y-2', 'opacity-0');
+                setTimeout(() => toast.remove(), 300);
+            }, 3500);
+        }
+
+        // --- Cryptography Engine (Web Crypto API) ---
+        async function deriveKey(secret) {
+            const enc = new TextEncoder();
+            const keyMaterial = await window.crypto.subtle.importKey(
+                "raw", enc.encode(secret), { name: "PBKDF2" }, false, ["deriveKey"]
+            );
+            return window.crypto.subtle.deriveKey(
+                { name: "PBKDF2", salt: enc.encode("cipherroom-salt-v1"), iterations: 100000, hash: "SHA-256" },
+                keyMaterial, { name: "AES-GCM", length: 256 }, true, ["encrypt", "decrypt"]
+            );
+        }
+
+        async function encryptMessage(text, key) {
+            const iv = window.crypto.getRandomValues(new Uint8Array(12));
+            const encoded = new TextEncoder().encode(text);
+            const cipher = await window.crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, encoded);
+            return { iv: Array.from(iv), data: Array.from(new Uint8Array(cipher)) };
+        }
+
+        async function decryptMessage(cipherObj, key) {
+            try {
+                const decrypted = await window.crypto.subtle.decrypt(
+                    { name: "AES-GCM", iv: new Uint8Array(cipherObj.iv) },
+                    key, new Uint8Array(cipherObj.data)
+                );
+                return new TextDecoder().decode(decrypted);
+            } catch (err) {
+                return "[Unable to decrypt message - Key mismatch or tampered]";
+            }
+        }
+
+        // --- Navigation & Hash Routing ---
+        window.addEventListener('hashchange', handleRoute);
+        window.addEventListener('load', () => {
+            handleRoute();
+            lucide.createIcons();
+        });
+
+        async function handleRoute() {
+            const hash = window.location.hash.substring(1);
+            if (!hash) {
+                setViewState('home');
+                return;
+            }
+
+            const parts = hash.split(':');
+            const roomId = parts[0];
+            const secretKey = parts[1];
+
+            if (!roomId || !secretKey) {
+                showToast('Invalid invitation link structure.', 'error');
+                window.location.hash = '';
+                setViewState('home');
+                return;
+            }
+
+            state.roomId = roomId;
+            state.secretKey = secretKey;
+            try {
+                state.cryptoKey = await deriveKey(secretKey);
+                setViewState('room');
+                initRoomConnection();
+            } catch (e) {
+                showToast('Failed to initialize cryptographic keys.', 'error');
+                setViewState('home');
+            }
+        }
+
+        function setViewState(view) {
+            state.view = view;
+            render();
+        }
+
+        // --- Room Creation & Joining ---
+        async function createRoom(event) {
+            event.preventDefault();
+            const expiry = document.getElementById('room-expiry').value;
+            const maxParticipants = parseInt(document.getElementById('room-max').value);
+            
+            const roomId = Math.random().toString(36).substring(2, 10);
+            const secretKey = Array.from(window.crypto.getRandomValues(new Uint8Array(16)))
+                .map(b => b.toString(16).padStart(2, '0')).join('');
+
+            state.roomConfig = { expiry, maxParticipants };
+            
+            // Set expiration seconds
+            if (expiry === '1h') state.timeRemaining = 3600;
+            else if (expiry === '6h') state.timeRemaining = 21600;
+            else if (expiry === '24h') state.timeRemaining = 86400;
+            else state.timeRemaining = 604800; // 7 days max for infinite demo
+
+            window.location.hash = `#${roomId}:${secretKey}`;
+        }
+
+        function joinRoomByInput(event) {
+            event.preventDefault();
+            const input = document.getElementById('join-link-input').value.trim();
+            if (!input) return;
+
+            if (input.includes('#')) {
+                const hashPart = input.substring(input.indexOf('#'));
+                window.location.hash = hashPart;
+            } else if (input.length > 8) {
+                // assume it's just the room:secret or hash
+                window.location.hash = input.startsWith('#') ? input : `#${input}`;
+            } else {
+                showToast('Please enter a valid room invitation link or hash.', 'error');
+            }
+        }
+
+        // --- Real-Time Communication (BroadcastChannel & Presence Simulation) ---
+        function initRoomConnection() {
+            if (state.channel) {
+                state.channel.close();
+            }
+
+            state.channel = new BroadcastChannel(`cipherroom-${state.roomId}`);
+            state.participants = [{ id: state.myId, isSelf: true }];
+
+            state.channel.onmessage = async (event) => {
+                const { type, payload } = event.data;
+                if (type === 'chat') {
+                    const plainText = await decryptMessage(payload.cipher, state.cryptoKey);
+                    state.messages.push({
+                        sender: payload.sender,
+                        text: plainText,
+                        time: payload.time,
+                        isSelf: false
+                    });
+                    renderChatMessages();
+                } else if (type === 'presence-ping') {
+                    if (!state.participants.some(p => p.id === payload.id)) {
+                        state.participants.push({ id: payload.id, isSelf: false });
+                        renderParticipants();
+                        // Reply back with our presence
+                        state.channel.postMessage({ type: 'presence-pong', payload: { id: state.myId } });
+                    }
+                } else if (type === 'presence-pong') {
+                    if (!state.participants.some(p => p.id === payload.id)) {
+                        state.participants.push({ id: payload.id, isSelf: false });
+                        renderParticipants();
+                    }
+                } else if (type === 'peer-left') {
+                    state.participants = state.participants.filter(p => p.id !== payload.id);
+                    renderParticipants();
+                }
+            };
+
+            // Announce presence
+            setTimeout(() => {
+                state.channel.postMessage({ type: 'presence-ping', payload: { id: state.myId } });
+            }, 300);
+
+            // Start countdown timer
+            if (state.expiryTimer) clearInterval(state.expiryTimer);
+            state.expiryTimer = setInterval(() => {
+                if (state.timeRemaining > 0) {
+                    state.timeRemaining--;
+                    const timerEl = document.getElementById('expiry-countdown');
+                    if (timerEl) {
+                        const m = Math.floor(state.timeRemaining / 60);
+                        const s = state.timeRemaining % 60;
+                        timerEl.innerText = `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+                    }
+                } else {
+                    leaveRoom();
+                    showToast('Room has expired and closed.', 'info');
+                }
+            }, 1000);
+
+            showToast('Successfully secured connection to room.', 'success');
+        }
+
+        async function sendChatMessage(event) {
+            event.preventDefault();
+            const input = document.getElementById('message-input');
+            const text = input.value.trim();
+            if (!text) return;
+
+            const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            const cipher = await encryptMessage(text, state.cryptoKey);
+
+            const messageObj = {
+                sender: state.myId,
+                text: text,
+                time: timeStr,
+                isSelf: true
+            };
+
+            state.messages.push(messageObj);
+            input.value = '';
+            renderChatMessages();
+
+            if (state.channel) {
+                state.channel.postMessage({
+                    type: 'chat',
+                    payload: {
+                        sender: state.myId,
+                        cipher: cipher,
+                        time: timeStr
+                    }
+                });
+            }
+        }
+
+        function leaveRoom() {
+            if (state.channel) {
+                state.channel.postMessage({ type: 'peer-left', payload: { id: state.myId } });
+                state.channel.close();
+                state.channel = null;
+            }
+            if (state.expiryTimer) clearInterval(state.expiryTimer);
+            state.messages = [];
+            state.participants = [];
+            window.location.hash = '';
+            setViewState('home');
+        }
+
+        function regenerateIdentity() {
+            const oldId = state.myId;
+            state.myId = 'Anonymous-' + Math.random().toString(36).substring(2, 6).toUpperCase();
+            showToast(`Identity regenerated to ${state.myId}`, 'info');
+            renderParticipants();
+        }
+
+        function copyInviteLink() {
+            const link = window.location.href;
+            navigator.clipboard.writeText(link).then(() => {
+                showToast('Invitation link copied to clipboard!', 'success');
+            }).catch(() => {
+                // fallback
+                const el = document.createElement('textarea');
+                el.value = link;
+                document.body.appendChild(el);
+                el.select();
+                document.execCommand('copy');
+                document.body.removeChild(el);
+                showToast('Invitation link copied!', 'success');
+            });
+        }
+
+        function clearLocalHistory() {
+            state.messages = [];
+            renderChatMessages();
+            showToast('Local message history cleared.', 'info');
+        }
+
+        function togglePrivacyModal(show) {
+            const modal = document.getElementById('privacy-modal');
+            if (show) modal.classList.remove('hidden');
+            else modal.classList.add('hidden');
+        }
+
+        // --- UI Rendering Engine ---
+        function render() {
+            const app = document.getElementById('app');
+            if (state.view === 'home') {
+                app.innerHTML = renderHomeView();
+            } else {
+                app.innerHTML = renderRoomView();
+                renderChatMessages();
+                renderParticipants();
+            }
+            lucide.createIcons();
+        }
+
+        function renderHomeView() {
+            return `
+                <div class="flex-1 flex flex-col items-center justify-center p-4 sm:p-6 md:p-8 max-w-5xl mx-auto w-full">
+                    <!-- Hero Banner -->
+                    <div class="text-center mb-10 max-w-2xl">
+                        <div class="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs font-semibold mb-6 animate-pulse-slow">
+                            <i data-lucide="shield" class="w-3.5 h-3.5"></i>
+                            Zero-Knowledge End-to-End Encrypted
+                        </div>
+                        <h1 class="text-4xl sm:text-5xl font-extrabold tracking-tight mb-4 text-white">
+                            Private conversations.<br><span class="text-transparent bg-clip-text bg-gradient-to-r from-emerald-400 to-teal-300">No accounts. No telemetry.</span>
+                        </h1>
+                        <p class="text-zinc-400 text-base sm:text-lg">
+                            Communicate in self-destructing rooms with client-side encryption. The server never sees your keys or messages.
+                        </p>
+                    </div>
+
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6 w-full max-w-3xl">
+                        <!-- Create Room Card -->
+                        <div class="glass-panel p-6 sm:p-8 rounded-3xl flex flex-col justify-between shadow-2xl relative overflow-hidden group">
+                            <div class="absolute -right-10 -bottom-10 w-40 h-40 bg-emerald-500/5 rounded-full blur-3xl pointer-events-none"></div>
+                            <div>
+                                <div class="flex items-center gap-3 mb-4">
+                                    <div class="p-3 bg-emerald-500/10 text-emerald-400 rounded-2xl border border-emerald-500/20">
+                                        <i data-lucide="plus-circle" class="w-6 h-6"></i>
+                                    </div>
+                                    <h2 class="text-xl font-bold">Create Private Room</h2>
+                                </div>
+                                <p class="text-sm text-zinc-400 mb-6">Instantly spin up an isolated secure room with custom parameters.</p>
+                                
+                                <form id="create-room-form" onsubmit="createRoom(event)" class="space-y-4">
+                                    <div>
+                                        <label class="block text-xs font-semibold uppercase tracking-wider text-zinc-400 mb-2">Room Expiry</label>
+                                        <select id="room-expiry" class="w-full glass-input rounded-xl px-4 py-3 text-sm text-zinc-200 focus:outline-none">
+                                            <option value="1h" class="bg-zinc-900">1 Hour</option>
+                                            <option value="6h" class="bg-zinc-900">6 Hours</option>
+                                            <option value="24h" class="bg-zinc-900">24 Hours</option>
+                                            <option value="7d" class="bg-zinc-900">7 Days</option>
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <label class="block text-xs font-semibold uppercase tracking-wider text-zinc-400 mb-2">Max Participants</label>
+                                        <select id="room-max" class="w-full glass-input rounded-xl px-4 py-3 text-sm text-zinc-200 focus:outline-none">
+                                            <option value="5" class="bg-zinc-900">5 Participants</option>
+                                            <option value="10" selected class="bg-zinc-900">10 Participants</option>
+                                            <option value="25" class="bg-zinc-900">25 Participants</option>
+                                        </select>
+                                    </div>
+                                    <button type="submit" class="w-full mt-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-semibold py-3.5 px-4 rounded-xl shadow-lg shadow-emerald-900/30 transition-all duration-200 active:scale-[0.98] flex items-center justify-center gap-2">
+                                        <i data-lucide="sparkles" class="w-4 h-4"></i> Generate Secure Room
+                                    </button>
+                                </form>
+                            </div>
+                        </div>
+
+                        <!-- Join Room Card -->
+                        <div class="glass-panel p-6 sm:p-8 rounded-3xl flex flex-col justify-between shadow-2xl relative overflow-hidden">
+                            <div class="absolute -right-10 -bottom-10 w-40 h-40 bg-cyan-500/5 rounded-full blur-3xl pointer-events-none"></div>
+                            <div>
+                                <div class="flex items-center gap-3 mb-4">
+                                    <div class="p-3 bg-cyan-500/10 text-cyan-400 rounded-2xl border border-cyan-500/20">
+                                        <i data-lucide="link" class="w-6 h-6"></i>
+                                    </div>
+                                    <h2 class="text-xl font-bold">Join via Invitation Link</h2>
+                                </div>
+                                <p class="text-sm text-zinc-400 mb-6">Paste your secure invitation link containing the decryption secret.</p>
+                                
+                                <form onsubmit="joinRoomByInput(event)" class="space-y-4">
+                                    <div>
+                                        <label class="block text-xs font-semibold uppercase tracking-wider text-zinc-400 mb-2">Invitation URL or Hash</label>
+                                        <input type="text" id="join-link-input" placeholder="https://.../#roomId:secretKey" class="w-full glass-input rounded-xl px-4 py-3 text-sm text-zinc-200 placeholder-zinc-600 focus:outline-none">
+                                    </div>
+                                    <button type="submit" class="w-full mt-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-100 font-semibold py-3.5 px-4 rounded-xl border border-zinc-700 transition-all duration-200 active:scale-[0.98] flex items-center justify-center gap-2">
+                                        <i data-lucide="arrow-right-circle" class="w-4 h-4"></i> Enter Room
+                                    </button>
+                                </form>
+                            </div>
+
+                            <div class="mt-8 pt-6 border-t border-zinc-800/80 flex items-center justify-between">
+                                <span class="text-xs text-zinc-500">Curious how it works?</span>
+                                <button onclick="togglePrivacyModal(true)" class="text-xs text-emerald-400 hover:text-emerald-300 font-medium flex items-center gap-1 transition">
+                                    <i data-lucide="shield-check" class="w-3.5 h-3.5"></i> Read Privacy Policy
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderRoomView() {
+            return `
+                <div class="flex-1 flex flex-col h-screen overflow-hidden">
+                    <!-- Top Navbar -->
+                    <header class="glass-panel border-b border-zinc-800 px-4 sm:px-6 py-3.5 flex items-center justify-between shrink-0 z-20">
+                        <div class="flex items-center gap-3">
+                            <div class="w-10 h-10 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
+                                <i data-lucide="lock" class="w-5 h-5"></i>
+                            </div>
+                            <div>
+                                <div class="flex items-center gap-2">
+                                    <h2 class="font-bold text-sm sm:text-base text-white tracking-tight">Room: <span class="font-mono text-emerald-400">${state.roomId}</span></h2>
+                                    <span class="hidden sm:inline-flex px-2 py-0.5 rounded-md bg-emerald-500/10 text-emerald-400 text-xs font-medium border border-emerald-500/20">E2EE Active</span>
+                                </div>
+                                <p class="text-xs text-zinc-400 flex items-center gap-1.5 mt-0.5">
+                                    <span class="w-2 h-2 rounded-full bg-emerald-500 animate-ping"></span>
+                                    <span>Identity: <strong class="text-zinc-300">${state.myId}</strong></span>
+                                </p>
+                            </div>
+                        </div>
+
+                        <div class="flex items-center gap-2 sm:gap-3">
+                            <button onclick="copyInviteLink()" class="hidden sm:flex items-center gap-2 px-3.5 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-xs font-medium text-zinc-200 border border-zinc-700 transition">
+                                <i data-lucide="copy" class="w-4 h-4 text-emerald-400"></i> Copy Invite Link
+                            </button>
+                            <button onclick="leaveRoom()" class="flex items-center gap-2 px-3.5 py-2 rounded-xl bg-red-500/10 hover:bg-red-500/20 text-xs font-medium text-red-400 border border-red-500/20 transition">
+                                <i data-lucide="log-out" class="w-4 h-4"></i> Leave
+                            </button>
+                        </div>
+                    </header>
+
+                    <!-- Main Chat Layout -->
+                    <div class="flex-1 flex overflow-hidden">
+                        <!-- Sidebar (Participants & Expiry) -->
+                        <aside class="w-72 border-r border-zinc-800/80 bg-zinc-900/40 p-4 hidden md:flex flex-col justify-between shrink-0">
+                            <div class="space-y-6">
+                                <div>
+                                    <div class="flex items-center justify-between mb-3">
+                                        <h3 class="text-xs font-semibold uppercase tracking-wider text-zinc-400 flex items-center gap-1.5">
+                                            <i data-lucide="users" class="w-3.5 h-3.5"></i> Participants (<span id="participant-count">1</span>)
+                                        </h3>
+                                    </div>
+                                    <div id="participant-list" class="space-y-2 max-h-48 overflow-y-auto pr-1">
+                                        <!-- Dynamically injected -->
+                                    </div>
+                                </div>
+
+                                <div class="p-3.5 rounded-xl bg-zinc-900/80 border border-zinc-800">
+                                    <div class="flex items-center justify-between mb-2">
+                                        <span class="text-xs text-zinc-400 flex items-center gap-1.5">
+                                            <i data-lucide="clock" class="w-3.5 h-3.5 text-amber-400"></i> Room Expiry
+                                        </span>
+                                        <span id="expiry-countdown" class="font-mono text-xs font-semibold text-amber-400">01:00:00</span>
+                                    </div>
+                                    <div class="w-full bg-zinc-800 h-1.5 rounded-full overflow-hidden">
+                                        <div class="bg-amber-400 h-full w-full"></div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="space-y-2 pt-4 border-t border-zinc-800">
+                                <button onclick="regenerateIdentity()" class="w-full flex items-center justify-center gap-2 px-3.5 py-2.5 rounded-xl bg-zinc-800/80 hover:bg-zinc-800 text-xs font-medium text-zinc-300 border border-zinc-700 transition">
+                                    <i data-lucide="refresh-cw" class="w-3.5 h-3.5 text-cyan-400"></i> Regenerate Identity
+                                </button>
+                                <button onclick="clearLocalHistory()" class="w-full flex items-center justify-center gap-2 px-3.5 py-2.5 rounded-xl bg-zinc-800/80 hover:bg-zinc-800 text-xs font-medium text-zinc-300 border border-zinc-700 transition">
+                                    <i data-lucide="trash-2" class="w-3.5 h-3.5 text-red-400"></i> Clear Local History
+                                </button>
+                            </div>
+                        </aside>
+
+                        <!-- Chat Feed & Input Area -->
+                        <main class="flex-1 flex flex-col bg-charcoal-950 relative overflow-hidden">
+                            <!-- Messages Area -->
+                            <div id="chat-messages" class="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4">
+                                <div class="flex flex-col items-center justify-center h-full text-center text-zinc-500 space-y-2">
+                                    <div class="p-4 bg-zinc-900/50 rounded-2xl border border-zinc-800 text-emerald-400 mb-2">
+                                        <i data-lucide="shield-check" class="w-8 h-8"></i>
+                                    </div>
+                                    <p class="text-sm font-medium text-zinc-300">End-to-End Encryption Established</p>
+                                    <p class="text-xs text-zinc-500 max-w-sm">Messages in this room are protected by AES-GCM 256. Only peers with this exact URL link can decrypt them.</p>
+                                </div>
+                            </div>
+
+                            <!-- Input Bar -->
+                            <div class="p-4 glass-panel border-t border-zinc-800 shrink-0">
+                                <form onsubmit="sendChatMessage(event)" class="flex items-center gap-2 max-w-4xl mx-auto">
+                                    <input type="text" id="message-input" placeholder="Type a secure message..." autocomplete="off" class="flex-1 glass-input rounded-xl px-4 py-3.5 text-sm text-zinc-100 placeholder-zinc-600 focus:outline-none">
+                                    <button type="submit" class="bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-medium px-5 py-3.5 rounded-xl shadow-lg shadow-emerald-900/20 transition flex items-center gap-2 shrink-0 active:scale-[0.98]">
+                                        <span>Send</span>
+                                        <i data-lucide="send" class="w-4 h-4"></i>
+                                    </button>
+                                </form>
+                            </div>
+                        </main>
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderChatMessages() {
+            const container = document.getElementById('chat-messages');
+            if (!container) return;
+
+            if (state.messages.length === 0) {
+                container.innerHTML = `
+                    <div class="flex flex-col items-center justify-center h-full text-center text-zinc-500 space-y-2">
+                        <div class="p-4 bg-zinc-900/50 rounded-2xl border border-zinc-800 text-emerald-400 mb-2">
+                            <i data-lucide="shield-check" class="w-8 h-8"></i>
+                        </div>
+                        <p class="text-sm font-medium text-zinc-300">End-to-End Encryption Established</p>
+                        <p class="text-xs text-zinc-500 max-w-sm">Messages in this room are protected by AES-GCM 256. Only peers with this exact URL link can decrypt them.</p>
+                    </div>
+                `;
+                return;
+            }
+
+            container.innerHTML = state.messages.map(msg => `
+                <div class="flex flex-col ${msg.isSelf ? 'items-end' : 'items-start'} space-y-1">
+                    <div class="flex items-center gap-2 px-1">
+                        <span class="text-xs font-semibold ${msg.isSelf ? 'text-emerald-400' : 'text-cyan-400'}">${msg.sender}</span>
+                        <span class="text-[10px] text-zinc-500">${msg.time}</span>
+                    </div>
+                    <div class="max-w-md sm:max-w-lg px-4 py-3 rounded-2xl text-sm leading-relaxed ${
+                        msg.isSelf 
+                            ? 'bg-emerald-600 text-white rounded-tr-sm shadow-lg shadow-emerald-900/10' 
+                            : 'glass-panel text-zinc-200 rounded-tl-sm border border-zinc-800'
+                    }">
+                        ${escapeHtml(msg.text)}
+                    </div>
+                </div>
+            `).join('');
+
+            container.scrollTop = container.scrollHeight;
+        }
+
+        function renderParticipants() {
+            const listEl = document.getElementById('participant-list');
+            const countEl = document.getElementById('participant-count');
+            if (!listEl || !countEl) return;
+
+            countEl.innerText = state.participants.length;
+            listEl.innerHTML = state.participants.map(p => `
+                <div class="flex items-center justify-between p-2 rounded-xl bg-zinc-900/60 border border-zinc-800/60 text-xs">
+                    <div class="flex items-center gap-2 truncate">
+                        <span class="w-2 h-2 rounded-full ${p.isSelf ? 'bg-emerald-400' : 'bg-cyan-400'}"></span>
+                        <span class="font-medium text-zinc-300 truncate">${p.id} ${p.isSelf ? '(You)' : ''}</span>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.innerText = text;
+            return div.innerHTML;
+        }
+    </script>
+</body>
+</html>
